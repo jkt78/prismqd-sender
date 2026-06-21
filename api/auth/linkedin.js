@@ -1,37 +1,61 @@
-module.exports = async (req, res) => {
-  const { code } = req.query;
-  const clientId = process.env.LINKEDIN_CLIENT_ID;
-  const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
-  const redirectUri = process.env.LINKEDIN_REDIRECT_URI || 'https://prismqd-sender.vercel.app/api/auth/linkedin';
-  if (!code) {
-    const authUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=r_liteprofile%20w_member_social`;
-    return res.redirect(authUrl);
-  }
-  try {
-    const params = new URLSearchParams({
+const https = require('https');
+const querystring = require('querystring');
+
+function getToken(code) {
+  return new Promise((resolve, reject) => {
+    const params = querystring.stringify({
       grant_type: 'authorization_code',
       code,
-      redirect_uri: redirectUri,
-      client_id: clientId,
-      client_secret: clientSecret,
+      redirect_uri: process.env.LINKEDIN_REDIRECT_URI,
+      client_id: process.env.LINKEDIN_CLIENT_ID,
+      client_secret: process.env.LINKEDIN_CLIENT_SECRET,
     });
-    const tokenRes = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+    const options = {
+      hostname: 'www.linkedin.com',
+      path: '/oauth/v2/accessToken',
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(params),
+      },
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(JSON.parse(data)));
     });
-    const tokenData = await tokenRes.json();
-    if (tokenData.access_token) {
-      return res.status(200).send(`
-        <h2>LinkedIn OAuth Success</h2>
-        <p>Add this as LINKEDIN_ACCESS_TOKEN in your Vercel environment variables:</p>
-        <pre style="background:#f0f0f0;padding:12px;word-break:break-all">${tokenData.access_token}</pre>
-        <p>Expires in: ${Math.floor(tokenData.expires_in / 86400)} days</p>
-      `);
-    } else {
-      return res.status(400).json({ error: 'Token exchange failed', details: tokenData });
-    }
+    req.on('error', reject);
+    req.write(params);
+    req.end();
+  });
+}
+
+module.exports = async (req, res) => {
+  const { code, error } = req.query;
+
+  if (error) return res.status(400).send(`LinkedIn auth error: ${error}`);
+  if (!code) {
+    // Redirect to LinkedIn auth
+    const params = querystring.stringify({
+      response_type: 'code',
+      client_id: process.env.LINKEDIN_CLIENT_ID,
+      redirect_uri: process.env.LINKEDIN_REDIRECT_URI,
+      scope: 'w_member_social',
+    });
+    return res.redirect(`https://www.linkedin.com/oauth/v2/authorization?${params}`);
+  }
+
+  try {
+    const tokenData = await getToken(code);
+    // Display token -- copy into Vercel env var LINKEDIN_ACCESS_TOKEN
+    return res.send(`
+      <h2>LinkedIn Connected!</h2>
+      <p>Copy this access token into your Vercel environment variable <strong>LINKEDIN_ACCESS_TOKEN</strong>:</p>
+      <textarea rows="4" cols="80" onclick="this.select()">${tokenData.access_token}</textarea>
+      <p>Expires in: ${Math.round(tokenData.expires_in / 86400)} days</p>
+      <p>After saving to Vercel env vars, redeploy the project.</p>
+    `);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).send(`Token exchange failed: ${err.message}`);
   }
 };
